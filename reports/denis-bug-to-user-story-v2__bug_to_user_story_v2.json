@@ -1,0 +1,377 @@
+[
+  {
+    "example": 1,
+    "question": "App de produtividade offline-first com bugs críticos de sincronização.\n\nCONTEXTO:\nApp mobile (iOS + Android) que funciona offline e sincroniza quando tem internet.\nUsuários: vendedores em campo, muitas vezes sem conexão.\n\nPROBLEMAS REPORTADOS:\n\n1. CONFLITO DE DADOS - Merge incorreto causa perda de dados:\n\n   Cenário:\n   - Usuário A (offline) edita tarefa #123: \"Ligar para cliente X às 14h\"\n   - Usuário B (offline) edita mesma tarefa: \"Ligar para cliente X às 15h (reagendado)\"\n   - Ambos sincronizam\n   - Sistema aplica \"last write wins\" → dados do usuário A perdidos\n   - Usuário A não sabe que seu agendamento foi sobrescrito\n\n   Impacto: 30+ casos de compromissos perdidos na última semana\n\n2. SINCRONIZAÇÃO - Upload infinito de anexos grandes:\n\n   Cenário:\n   - Usuário anexa PDF de 50MB em uma tarefa\n   - Inicia upload via 4G\n   - Conexão cai no meio (sinal fraco)\n   - App reinicia upload do zero (não retoma)\n   - Após 5 tentativas, desiste mas não avisa o usuário\n   - Tarefa fica \"sincronizada\" mas sem anexo\n\n   Logs:\n   ```\n   [SYNC] Uploading attachment.pdf (50MB)... 40% complete\n   [NETWORK] Connection lost\n   [SYNC] Retry 1/5 - Restarting from 0%\n   [SYNC] Uploading attachment.pdf (50MB)... 35% complete\n   [NETWORK] Connection lost\n   [SYNC] Retry 2/5 - Restarting from 0%\n   ...\n   [SYNC] Max retries exceeded. Giving up.\n   [ERROR] Upload failed but status marked as synced\n   ```\n\n3. ORDENAÇÃO - Operações aplicadas fora de ordem no servidor:\n\n   Cenário offline (usuário sem internet por 2 horas):\n   - 10:00 - Cria tarefa \"Tarefa A\"\n   - 10:15 - Edita \"Tarefa A\" → \"Tarefa A - Urgente\"\n   - 10:30 - Deleta \"Tarefa A\"\n\n   Ao sincronizar:\n   - Servidor recebe DELETE antes do CREATE (ordem errada)\n   - Tenta deletar tarefa que não existe → erro 404\n   - CREATE e UPDATE são aplicados depois\n   - Resultado: tarefa existe (deveria estar deletada)\n   - Timestamp client-side não é respeitado\n\n4. MEMÓRIA - App crasha ao sincronizar 1000+ itens pendentes:\n\n   Cenário:\n   - Usuário fica 1 semana offline\n   - Acumula 1.500 operações pendentes (create, update, delete)\n   - Volta para área com WiFi\n   - App tenta sincronizar tudo de uma vez\n   - Carrega todos os 1.500 itens na memória\n   - iOS: Memory Warning → App crashado pelo OS\n   - Android: OutOfMemoryError\n\n   Memória medida: 850MB (limite iOS: 700MB)\n\nIMPACTO:\n- 250+ usuários afetados\n- NPS caiu de 8.5 para 4.2\n- 80% dos reviews negativos mencionam \"perda de dados\"\n- Churn rate aumentou 15% no último mês\n- Time de vendas perdeu R$ 200k em oportunidades por dados perdidos",
+    "answer": "=== USER STORY PRINCIPAL ===\n\nTítulo: Sincronização segura e confiável para usuários offline\n\nDescrição:\nComo um vendedor em campo usando a app de produtividade offline, eu quero que\nminhas operações sejam sincronizadas corretamente e que eu receba feedback\nclaramente quando algo falhar, para que eu possa continuar trabalhando sem\nperder dados importantes.\n\n=== CRITÉRIOS DE ACEITAÇÃO ===\n\nA. Manutenção de dados em conflito:\n- Dado que dois usuários editam a mesma tarefa offline\n- Quando ambos sincronizam\n- Então o sistema deve resolver conflitos de forma justa, mantendo ambas as edições\n- E deve notificar o usuário sobre a resolução do conflito\n\nB. Retomada de uploads de anexos:\n- Dado que um usuário inicia o upload de um anexo grande\n- Quando a conexão cai e o upload é interrompido\n- Então o sistema deve retomar o upload a partir do ponto onde parou\n- E deve avisar o usuário sobre o progresso e sobre o término do upload\n\nC. Aplicação de operações em ordem correta:\n- Dado que um usuário realiza várias operações offline\n- Quando o dispositivo volta à internet\n- Então as operações devem ser aplicadas na ordem correta no servidor\n- E o sistema deve lidar com erros de ordem de operações, como 404s, de forma a\n  manter a consistência dos dados\n\nD. Gerenciamento de memória durante sincronização:\n- Dado que um usuário acumula muitas operações pendentes\n- Quando o dispositivo volta à internet\n- Então o sistema deve processar as operações em lotes, liberando memória após\n  cada lote\n- E deve evitar o crash do app devido a falta de memória\n\nE. Feedback claro sobre falhas de sincronização:\n- Dado que ocorre uma falha durante a sincronização\n- Quando o sistema não consegue completar a operação\n- Então o usuário deve receber uma mensagem clara sobre o que aconteceu e\n  quaisquer ações necessárias\n\n=== CRITÉRIOS TÉCNICOS ===\n\nConflitos de dados:\n- Implementar algoritmo de merge robusto que respeite as duas versões\n- Monitorar e resolver conflitos de forma transparente\n\nRetomada de uploads:\n- Implementar checkpoint para retomada de uploads interrompidos\n- Notificar o usuário sobre o progresso e o término do upload\n\nOrdem de operações:\n- Implementar mecanismo de ordem de transações atômicas\n- Lidar com erros de ordem de operações, como 404s, de forma a manter consistência\n\nGerenciamento de memória:\n- Processar operações em lotes, liberando memória após cada lote\n- Lidar com limites de memória do sistema operacional\n\nFeedback de falhas:\n- Implementar mecanismos de notificação clara sobre falhas de sincronização\n\n=== CONTEXTO DO BUG ===\n- Problemas: perda de dados em conflitos, uploads infinitos de anexos grandes,\n  operações aplicadas fora de ordem, crash do app devido a memória insuficiente\n- Impacto: 250+ usuários afetados, queda de NPS, churn rate aumentado,\n  perda de R$ 200k em oportunidades por dados perdidos\n- Logs de upload interrompido: [SYNC] Max retries exceeded. Giving up.\n- Memória medida: 850MB (limite iOS: 700MB)\n\n=== TASKS TÉCNICAS SUGERIDAS ===\n- Implementar algoritmo de merge robusto\n- Implementar checkpoint para retomada de uploads\n- Implementar mecanismo de ordem de transações atômicas\n- Lidar com erros de ordem de operações, como 404s\n- Processar operações em lotes, liberando memória após cada lote\n- Implementar mecanismos de notificação clara sobre falhas de sincronização\n\n=== MÉTRICAS DE SUCESSO ===\n- Nenhum dado é perdido em conflitos\n- Todos os uploads são retomados corretamente\n- Todas as operações são aplicadas na ordem correta\n- O app não crasha devido a falta de memória durante sincronização\n- O usuário recebe feedback claro sobre falhas de sincronização",
+    "reference": "Como um vendedor usando o app em campo, eu quero que minhas alterações offline sejam sincronizadas de forma confiável sem perda de dados, para que eu possa trabalhar com tranquilidade mesmo em áreas sem conexão.\n\n=== USER STORY PRINCIPAL ===\n\nTítulo: Sincronização confiável e resiliente para operações offline\n\nDescrição:\nComo um usuário mobile trabalhando frequentemente offline, eu quero que todas as minhas alterações sejam sincronizadas corretamente quando houver conexão, sem perda de dados, conflitos mal resolvidos ou crashes, para que eu possa confiar no app como ferramenta crítica de trabalho.\n\n=== CRITÉRIOS DE ACEITAÇÃO ===\n\nA. Conflitos - Resolução inteligente com aviso ao usuário:\n- Dado que dois usuários editam a mesma tarefa offline\n- Quando ambos sincronizam\n- Então o sistema deve detectar o conflito\n- E deve criar uma cópia de backup da versão conflitante\n- E deve notificar ambos os usuários sobre o conflito\n- E deve permitir escolher qual versão manter manualmente\n\nB. Upload Resiliente - Retomada de upload de anexos grandes:\n- Dado que estou enviando um anexo de 50MB\n- Quando a conexão cai durante o upload\n- Então o app deve salvar o progresso (checkpoints a cada 5MB)\n- E ao reconectar, deve retomar do último checkpoint\n- E deve mostrar progresso em tempo real\n- E se falhar após 5 tentativas, deve manter na fila e avisar o usuário\n\nC. Ordenação Garantida - Operações aplicadas na ordem correta:\n- Dado que realizo múltiplas operações offline em sequência\n- Quando sincronizo com o servidor\n- Então as operações devem ser aplicadas na ordem cronológica correta\n- E cada operação deve ter timestamp do cliente\n- E o servidor deve respeitar a ordem baseada no timestamp\n- E operações dependentes (create → update → delete) devem ser atômicas\n\nD. Sincronização em Lote - Sem crash com muitos itens pendentes:\n- Dado que tenho 1.500 operações pendentes após 1 semana offline\n- Quando inicio a sincronização\n- Então o app deve processar em lotes de 50 itens\n- E deve liberar memória entre lotes\n- E não deve ultrapassar 500MB de memória\n- E deve mostrar progresso (ex: \"Sincronizando 150/1500\")\n- E deve permitir pausar/retomar a sincronização\n\n=== CRITÉRIOS TÉCNICOS ===\n\nResolução de Conflitos - CRDT ou Vector Clocks:\n- Implementar CRDTs (Conflict-free Replicated Data Types) OU\n- Vector clocks para detectar conflitos\n- Estratégia híbrida:\n  * Auto-merge: campos independentes (ex: título + descrição)\n  * Manual: campos conflitantes (ex: horário de reunião)\n- Manter histórico de versões para rollback\n\nUpload Resiliente - Chunked Upload com Checkpoints:\n```\nProtocolo:\n1. Dividir arquivo em chunks de 5MB\n2. POST /api/uploads/initiate → retorna upload_id\n3. PUT /api/uploads/{upload_id}/chunk/{n} para cada chunk\n4. POST /api/uploads/{upload_id}/complete quando terminar\n5. Se falhar, GET /api/uploads/{upload_id}/status para saber último chunk\n6. Retomar do próximo chunk não enviado\n```\n\nOrdenação - Operation Log com Timestamps:\n```\nEstrutura de operação:\n{\n  \"id\": \"uuid-v4\",\n  \"type\": \"CREATE|UPDATE|DELETE\",\n  \"entity\": \"task\",\n  \"entity_id\": \"123\",\n  \"data\": {...},\n  \"client_timestamp\": \"2025-01-15T10:30:00Z\",\n  \"device_id\": \"abc123\"\n}\n\nServidor aplica em ordem de client_timestamp (não ordem de chegada)\n```\n\nSincronização em Lote - Batch Processing:\n```\nAlgoritmo:\n1. Contar operações pendentes: N\n2. Dividir em lotes de 50: batches = ceil(N / 50)\n3. Para cada lote:\n   a. Carregar 50 operações do SQLite local\n   b. Enviar para servidor: POST /api/sync/batch\n   c. Marcar como sincronizado no local\n   d. Liberar memória (clear cache)\n   e. Atualizar UI: \"Lote X de Y completo\"\n4. Ao completar tudo, mostrar \"Sincronização completa\"\n\nRate limiting: máx 5 lotes por segundo\nRetry: exponential backoff (1s, 2s, 4s, 8s, 16s)\n```\n\nMemória - Streaming e Garbage Collection:\n- Usar SQLite cursor (não carregar tudo na memória)\n- Processar registros em streaming\n- Force GC após cada lote\n- Monitorar memória: se > 400MB, pausar sync\n\n=== CONTEXTO DO BUG ===\n\nSeveridade: CRÍTICA (Perda de dados em produção)\n\nImpacto Business:\n- 250+ usuários afetados\n- NPS: 8.5 → 4.2\n- Churn +15%\n- Perda de R$ 200k em oportunidades\n\nProblemas Técnicos:\n1. Last-write-wins sem detecção de conflito\n2. Upload não suporta resumable uploads\n3. Operações aplicadas fora de ordem\n4. Sync carrega tudo na memória (OOM)\n\nApp Architecture:\n- Frontend: React Native (iOS + Android)\n- Local DB: SQLite com WatermelonDB\n- Backend: Node.js + PostgreSQL\n- Sync Protocol: REST API (substituir por GraphQL + subscriptions?)\n\n=== TASKS TÉCNICAS SUGERIDAS ===\n\nFase 1 - Hotfix Urgente (3 dias):\n1. [MEMORY] Implementar sync em lotes de 50 itens\n2. [UPLOAD] Adicionar retry exponential backoff\n3. [MONITOR] Adicionar logging de erros de sync\n\nFase 2 - Core Fixes (2 semanas):\n4. [CONFLICT] Implementar detecção de conflitos básica\n5. [CONFLICT] UI para resolver conflitos manualmente\n6. [UPLOAD] Implementar chunked upload com resumable\n7. [ORDER] Adicionar client_timestamp em todas operações\n8. [ORDER] Servidor aplicar ops em ordem de timestamp\n\nFase 3 - Robust Architecture (3 semanas):\n9. [CONFLICT] Migrar para CRDTs para auto-merge\n10. [SYNC] Implementar operation log persistente\n11. [PERF] Otimizar queries SQLite (índices)\n12. [MONITOR] Dashboard de sync health\n\nFase 4 - Scale & Polish (1 semana):\n13. [UX] Melhorar feedback de progresso de sync\n14. [UX] Permitir pausar/retomar sync\n15. [TESTS] Testes de sync com 10k+ operações\n16. [DOCS] Documentar arquitetura de sync\n\n=== MÉTRICAS DE SUCESSO ===\n\nAntes vs Depois:\n- Perda de dados: 30 casos/semana → 0 casos/semana\n- Crash rate em sync: 15% → < 1%\n- NPS: 4.2 → > 7.5\n- Sync success rate: 75% → > 99%\n- Tempo de sync (1000 itens): crash → < 60s\n- Memória durante sync: 850MB → < 500MB",
+    "metrics": {
+      "f1": {
+        "score": 0.9,
+        "precision": 0.9,
+        "recall": 0.9,
+        "precision_rating": "acceptable",
+        "recall_rating": "acceptable",
+        "reasoning": "Ambas as respostas abordam os principais problemas relatados e as soluções propostas. No entanto, a resposta gerada omite alguns detalhes técnicos presentes na Ground Truth, como a implementação de CRDTs, o uso de timestamps em logs de operações e a estratégia de processamento em lotes específico. Além disso, a linguagem e a estrutura da resposta gerada são ligeiramente diferentes, mas o conteúdo central está presente."
+      },
+      "clarity": {
+        "score": 0.93,
+        "reasoning": "A resposta é bem organizada, com uma estrutura lógica e clara. Utiliza linguagem simples e direta, evitando jargões desnecessários. As informações estão bem apresentadas, sem ambiguidades significativas. A concisão é adequada, com poucas redundâncias que não comprometem a compreensão geral."
+      },
+      "precision": {
+        "score": 0.9,
+        "rating": "acceptable",
+        "reasoning": "A resposta geralmente é precisa e focada na questão, mas há algumas pequenas divergências. Por exemplo, a sugestão de usar CRDTs para resolução de conflitos não foi mencionada na pergunta original, embora seja uma solução viável. Além disso, a descrição das métricas de sucesso inclui melhorias que não foram explicitamente solicitadas na pergunta original."
+      }
+    }
+  },
+  {
+    "example": 2,
+    "question": "Sistema de relatórios gerenciais com problemas severos de performance e dados incorretos.\n\nCONTEXTO:\nAplicação SaaS B2B com 500+ empresas clientes, cada uma com 50-5000 usuários.\n\nPROBLEMAS:\n\n1. PERFORMANCE - Query N+1 no dashboard executivo:\n   - Endpoint: GET /api/reports/executive-dashboard\n   - Para cada empresa, faz query separada para buscar métricas\n   - 1 cliente com 100 departamentos = 101 queries\n   - Tempo de resposta: 45 segundos (SLA: 3s)\n   - Database CPU: 95% em horário de pico\n\n   Stack trace:\n   ```\n   SELECT * FROM metrics WHERE company_id = ?  (executado 100x)\n   SELECT * FROM users WHERE company_id = ?     (executado 100x)\n   SELECT * FROM licenses WHERE company_id = ?  (executado 100x)\n   ```\n\n2. LÓGICA DE NEGÓCIO - Cálculo de MRR (Monthly Recurring Revenue) inconsistente:\n   - Dashboard mostra: R$ 150.000 MRR\n   - Relatório financeiro: R$ 145.000 MRR\n   - Planilha contábil: R$ 147.500 MRR\n\n   Causas identificadas:\n   - Dashboard: considera cancelamentos do mês anterior\n   - Relatório: só considera assinaturas ativas\n   - Contábil: considera pró-rata de upgrades/downgrades\n   - Nenhuma fonte está 100% correta\n\n3. CACHE - Cache Redis desatualizado causa dados old:\n   - TTL do cache: 24 horas\n   - Cliente faz upgrade de plano\n   - Dashboard ainda mostra plano antigo por até 24h\n   - Invalidação manual não funciona corretamente\n\n4. CONCORRÊNCIA - Exportação de CSV trava servidor:\n   - Exportar relatório anual (365 dias, 50k linhas)\n   - Process fica em 100% CPU por 5 minutos\n   - Outras requisições ficam lentas\n   - Memória cresce até 4GB (limite: 2GB) → OOM Kill\n\nIMPACTO BUSINESS:\n- 15 clientes enterprise ameaçando cancelar contrato\n- CEO não confia nos números para apresentar ao board\n- Time de CS gastando 40h/semana explicando discrepâncias\n- Impossível fazer forecasting confiável",
+    "answer": "=== USER STORY PRINCIPAL ===\n\nTítulo: Desempenho e consistência dos relatórios gerenciais\n\nDescrição:\nComo um gerente de negócios, eu quero que os relatórios gerenciais sejam rápidos e consistentes, para que eu possa tomar decisões baseadas em dados precisos e confiáveis.\n\n=== CRITÉRIOS DE ACEITAÇÃO ===\n\nA. Desempenho do dashboard executivo:\n- Dado que acesso o dashboard executivo\n- Quando há 100 departamentos em uma empresa\n- Então o tempo de resposta deve ser inferior a 3 segundos\n- E não deve ocorrer mais de 10 queries por departamento\n- E o uso de CPU do banco de dados deve ser inferior a 20%\n\nB. Consistência do cálculo de MRR:\n- Dado que acesso o dashboard\n- Quando o MRR é calculado\n- Então o valor deve corresponder ao relatório financeiro\n- E não deve considerar cancelamentos do mês anterior\n- E o valor contábil deve refletir pró-rata de upgrades/downgrades\n\nC. Atualização do cache Redis:\n- Dado que uma empresa realiza um upgrade de plano\n- Quando o cache Redis é atualizado\n- Então o novo plano deve ser refletido no dashboard dentro de 1 minuto\n- E a invalidação manual deve funcionar corretamente\n\nD. Performance da exportação de CSV:\n- Dado que exporto um relatório anual com 50k linhas\n- Quando o processo começa\n- Então ele deve concluir em menos de 1 minuto\n- E não deve causar lentidão nas outras requisições\n- E o uso de memória deve ser inferior a 2GB\n\nE. Confiança nos dados:\n- Dado que acesso os relatórios gerenciais\n- Quando os dados são inconsistentes\n- Então o sistema deve fornecer uma explicação clara das diferenças entre as fontes\n- E o time de CS deve ter suporte automatizado para resolver discrepâncias\n\n=== CRITÉRIOS TÉCNICOS ===\n\nDesempenho:\n- Implementar query em lote para reduzir o número de consultas\n- Otimizar índices no banco de dados\n- Configurar TTL dinâmico para o cache Redis\n\nLógica de negócios:\n- Corrigir a lógica de cálculo do MRR para refletir a situação atual\n- Documentar as diferenças entre as fontes de dados\n\nConcorrência:\n- Implementar idempotência e retry com backoff para a exportação de CSV\n- Monitorar e limitar o uso de memória durante a exportação\n\nCache:\n- Implementar invalidação automática do cache após atualizações de plano\n- Testar a invalidação manual em diferentes cenários\n\n=== CONTEXTO DO BUG ===\n- Problemas: performance, cálculo inconsistente, cache desatualizado, concorrência na exportação\n- Tempo de resposta atual: 45 segundos (SLA: 3s)\n- Cálculo de MRR inconsistente entre fontes\n- TTL do cache: 24 horas\n- Uso de memória durante exportação: até 4GB (limite: 2GB)\n- 15 clientes enterprise ameaçando cancelar contrato\n- CEO não confia nos números para apresentar ao board\n- Time de CS gastando 40h/semana explicando discrepâncias\n- Impossível fazer forecasting confiável\n\n=== TASKS TÉCNICAS SUGERIDAS ===\n- Implementar query em lote para reduzir o número de consultas no dashboard\n- Corrigir a lógica de cálculo do MRR para refletir a situação atual\n- Implementar invalidação automática do cache após atualizações de plano\n- Implementar idempotência e retry com backoff para a exportação de CSV\n- Monitorar e limitar o uso de memória durante a exportação\n\n=== MÉTRICAS DE SUCESSO ===\n- Tempo de resposta do dashboard: <3 segundos\n- Cálculo de MRR: consistente entre todas as fontes\n- TTL do cache: atualizado em 1 minuto após atualizações de plano\n- Uso de memória durante exportação: <2GB\n- Discrepâncias explicadas claramente para o time de CS",
+    "reference": "Como um executivo usando o sistema de relatórios, eu quero visualizar métricas precisas e atualizadas em tempo hábil, para que eu possa tomar decisões estratégicas baseadas em dados confiáveis.\n\n=== USER STORY PRINCIPAL ===\n\nTítulo: Sistema de relatórios gerenciais confiável e performático\n\nDescrição:\nComo um usuário executivo (CEO, CFO, VP), eu quero acessar dashboards e relatórios gerenciais que sejam rápidos, precisos e consistentes em todas as fontes, para que eu possa confiar nos dados para tomada de decisão estratégica.\n\n=== CRITÉRIOS DE ACEITAÇÃO ===\n\nA. Performance - Dashboard carrega em menos de 3 segundos:\n- Dado que sou um executivo acessando o dashboard\n- Quando carrego GET /api/reports/executive-dashboard\n- Então a página deve carregar completamente em < 3 segundos\n- E o database CPU deve ficar abaixo de 70% mesmo em horário de pico\n- E deve funcionar para empresas com até 10.000 usuários\n\nB. Dados Consistentes - MRR igual em todas as fontes:\n- Dado que consulto o MRR (Monthly Recurring Revenue)\n- Quando verifico dashboard, relatório financeiro e API\n- Então o valor deve ser idêntico em todas as fontes\n- E deve seguir a regra de negócio acordada (documentada)\n- E deve considerar: assinaturas ativas + pró-rata de mudanças\n\nC. Cache Inteligente - Dados sempre atualizados:\n- Dado que um cliente faz upgrade/downgrade de plano\n- Quando acesso o dashboard em até 30 segundos após a mudança\n- Então devo ver os dados atualizados\n- E o cache deve ser invalidado automaticamente\n- E dados críticos (MRR, Active Users) não devem usar cache > 5min\n\nD. Exportação Assíncrona - CSV não trava servidor:\n- Dado que solicito exportação de relatório anual\n- Quando clico em \"Exportar para CSV\"\n- Então a exportação deve processar em background\n- E devo receber notificação quando concluir\n- E outras requisições não devem ser afetadas\n- E o servidor não deve ultrapassar 80% de memória\n\n=== CRITÉRIOS TÉCNICOS ===\n\nPerformance - Resolver N+1:\n- Implementar eager loading com JOIN\n- Reduzir 300 queries para 3 queries agregadas\n- Usar materialized views para métricas complexas\n- Adicionar índices compostos nas FKs mais usadas\n\nExemplo de query otimizada:\n```sql\nSELECT\n  c.id, c.name,\n  COUNT(DISTINCT u.id) as user_count,\n  COUNT(DISTINCT l.id) as license_count,\n  SUM(m.revenue) as total_revenue\nFROM companies c\nLEFT JOIN users u ON u.company_id = c.id\nLEFT JOIN licenses l ON l.company_id = c.id\nLEFT JOIN metrics m ON m.company_id = c.id\nWHERE c.id = ?\nGROUP BY c.id, c.name\n```\n\nLógica de Negócio - MRR Padronizado:\n- Criar função centralizada `calculateMRR()` usada por todos\n- Regra: assinaturas ativas + pró-rata de mudanças no mês\n- Documentar fórmula no código e wiki técnica\n- Adicionar testes unitários para cada cenário\n\nCache - Estratégia Híbrida:\n- Dados em tempo real (sem cache): MRR, Active Users, Critical Metrics\n- Dados com cache curto (5min): Dashboard counts, Statistics\n- Dados com cache longo (1h): Historical data, Completed reports\n- Implementar cache invalidation automática via eventos\n\nExportação - Background Jobs:\n- Usar job queue (Sidekiq, Bull, ou similar)\n- Streaming de CSV (não carregar tudo na memória)\n- Limite: 1000 linhas por chunk\n- Notificação por email ou webhook quando concluir\n- Timeout: 30 minutos para qualquer exportação\n\n=== CONTEXTO DO BUG ===\n\nSeveridade: CRÍTICA (Impacto financeiro e reputacional)\n\nImpacto Business:\n- 15 clientes enterprise em risco de churn\n- CEO sem confiança nos números para board\n- 40h/semana de CS explicando discrepâncias\n\nProblemas Técnicos:\n1. N+1 query problem (300 queries vs 3 necessárias)\n2. MRR calculado diferente em 3 lugares\n3. Cache de 24h muito longo + invalidação quebrada\n4. Export síncrono mata servidor\n\nSLA Atual vs Esperado:\n- Dashboard: 45s atual → 3s esperado\n- MRR consistency: 3 valores diferentes → 1 valor único\n- Cache staleness: até 24h → máx 5min para dados críticos\n- Export impact: trava servidor → zero impacto\n\n=== TASKS TÉCNICAS SUGERIDAS ===\n\nSprint 1 - Quick Wins (1 semana):\n1. [PERF] Adicionar índices nas FKs company_id\n2. [CACHE] Reduzir TTL de 24h para 5min em métricas críticas\n3. [LOGIC] Documentar fórmula MRR acordada\n\nSprint 2 - Core Fixes (2 semanas):\n4. [PERF] Refatorar queries para eliminar N+1\n5. [LOGIC] Centralizar cálculo MRR em função única\n6. [CACHE] Implementar invalidação automática via eventos\n7. [EXPORT] Migrar exports para background jobs\n\nSprint 3 - Scale & Monitor (1 semana):\n8. [PERF] Criar materialized views para dashboards\n9. [MONITOR] Adicionar APM para detectar slow queries\n10. [TESTS] Testes de carga para 10k users por empresa\n11. [DOCS] Documentar arquitetura de cache e jobs",
+    "metrics": {
+      "f1": {
+        "score": 0.9,
+        "precision": 0.9,
+        "recall": 0.9,
+        "precision_rating": "acceptable",
+        "recall_rating": "acceptable",
+        "reasoning": "Ambas as respostas abordam os principais problemas e soluções propostas, embora haja algumas pequenas divergências. A resposta gerada menciona '10 queries por departamento' e '20% de uso de CPU', enquanto a pergunta original menciona '101 queries' e '95% de uso de CPU'. Além disso, a resposta gerada inclui um critério de aceitação E que não estava presente na pergunta original."
+      },
+      "clarity": {
+        "score": 0.93,
+        "reasoning": "A resposta é bem organizada, com uma estrutura lógica e clara. Utiliza linguagem simples e direta, evitando jargões desnecessários. As informações estão bem distribuídas e não há ambiguidades significativas. A concisão é adequada, sem redundâncias desnecessárias."
+      },
+      "precision": {
+        "score": 0.9,
+        "rating": "acceptable",
+        "reasoning": "A resposta geralmente é precisa e focada na questão, mas há algumas pequenas divergências. Por exemplo, a resposta sugere que o TTL do cache seja reduzido para 5 minutos, enquanto a pergunta original menciona 24 horas. Além disso, a resposta inclui detalhes técnicos adicionais que não foram explicitamente solicitados na pergunta original."
+      }
+    }
+  },
+  {
+    "example": 3,
+    "question": "Sistema de checkout com múltiplas falhas críticas.\n\nPROBLEMAS IDENTIFICADOS:\n\n1. SEGURANÇA - XSS no campo de cupom:\n   - Input: <script>alert('xss')</script>\n   - Sistema executa o script\n   - Não há sanitização de entrada\n\n2. INTEGRAÇÃO - Gateway de pagamento retorna erro intermitente:\n   - POST /api/payment/process retorna 504 Gateway Timeout em 30% dos casos\n   - Clientes são cobrados mas pedido não é criado\n   - Logs: \"Connection pool exhausted\" no Postgres\n\n3. LÓGICA DE NEGÓCIO - Race condition em cupons de desconto:\n   - Cupom \"PROMO10\" (limite: 100 usos)\n   - Sistema permitiu 147 usos\n   - Verificação de limite não é atômica\n\n4. UX - Loading infinito após timeout:\n   - Se pagamento demora > 30s\n   - Tela fica com spinner eternamente\n   - Usuário não sabe se pagamento foi processado\n\nIMPACTO:\n- 150+ clientes afetados na última semana\n- Perda estimada: R$ 15.000 em cupons indevidos\n- 45 tickets de suporte abertos\n- Rating do app caiu de 4.5 para 3.2 estrelas",
+    "answer": "=== USER STORY PRINCIPAL ===\n\nTítulo: Checkout seguro e funcional\n\nDescrição:\nComo um cliente finalizando uma compra, eu quero um checkout seguro e funcional, para que eu conclua o pagamento sem problemas.\n\n=== CRITÉRIOS DE ACEITAÇÃO ===\n\nA. Segurança do cupom:\n- Dado que informo conteúdo de script no campo de cupom\n- Quando o valor é processado\n- Então o script não deve ser executado\n- E o valor deve ser tratado como entrada inválida\n- E a mensagem deve indicar que o cupom é inválido\n\nB. Integração com gateway de pagamento:\n- Dado que o pagamento está em processamento\n- Quando a requisição POST /api/payment/process retorna 504 Gateway Timeout\n- Então o sistema deve encerrar o processo\n- E deve informar ao usuário que houve um erro no pagamento\n- E não deve cobrar o cliente sem registrar o pedido\n\nC. Lógica de negócios para cupons:\n- Dado que o cupom \"PROMO10\" tem um limite de 100 usos\n- Quando o sistema permite mais de 100 usos\n- Então o sistema deve impedir o uso adicional\n- E deve informar ao usuário que o cupom foi usado acima do limite\n\nD. Feedback após timeout:\n- Dado que o pagamento está em processamento\n- Quando a operação ultrapassa 30 segundos\n- Então o loading deve ser encerrado\n- E devo receber informação clara sobre o estado do pagamento\n- E não deve ficar com spinner eterno\n\n=== CONTEXTO DO BUG ===\n- Problemas: XSS no campo de cupom, gateway de pagamento retornando 504, race condition em cupons de desconto, loading infinito após timeout\n- Impacto: 150+ clientes afetados na última semana, perda estimada de R$ 15.000 em cupons indevidos, 45 tickets de suporte abertos, rating do app caiu de 4.5 para 3.2 estrelas\n- Logs: \"Connection pool exhausted\" no Postgres\n- Impacto financeiro e reputacional significativo",
+    "reference": "Como um cliente finalizando minha compra, eu quero um processo de checkout seguro, confiável e com feedback claro, para que eu possa completar minhas compras sem preocupações ou frustrações.\n\n=== USER STORY PRINCIPAL ===\n\nTítulo: Checkout seguro e confiável com tratamento robusto de erros\n\nDescrição:\nComo um cliente do e-commerce, eu quero finalizar minhas compras de forma segura e receber feedback claro sobre o status do pagamento, para que eu tenha confiança no processo e saiba exatamente o que está acontecendo.\n\n=== CRITÉRIOS DE ACEITAÇÃO ===\n\nA. Segurança - Proteção contra XSS:\n- Dado que estou inserindo um cupom de desconto\n- Quando digito qualquer texto (incluindo scripts)\n- Então o sistema deve sanitizar a entrada\n- E não deve executar scripts maliciosos\n- E deve exibir apenas texto plano\n\nB. Integração - Processamento confiável de pagamento:\n- Dado que estou finalizando uma compra\n- Quando clico em \"Finalizar Pagamento\"\n- Então o sistema deve processar o pagamento em até 30 segundos\n- E se ocorrer timeout, deve tentar novamente (retry com backoff)\n- E não deve cobrar o cliente múltiplas vezes\n- E se o pagamento for aprovado, o pedido DEVE ser criado\n\nC. Lógica de Negócio - Controle atômico de cupons:\n- Dado que um cupom tem limite de 100 usos\n- Quando múltiplos usuários tentam usar simultaneamente\n- Então o sistema deve usar lock otimista/pessimista\n- E deve garantir que apenas 100 usos sejam aceitos\n- E usuários após o limite devem ver mensagem \"cupom esgotado\"\n\nD. UX - Feedback claro sobre status:\n- Dado que o pagamento está sendo processado\n- Quando o tempo ultrapassa 30 segundos\n- Então devo ver mensagem \"Processando pagamento, por favor aguarde...\"\n- E se der timeout, devo ver \"Estamos verificando seu pagamento\"\n- E devo ter opção de \"Consultar Status\" ou \"Tentar Novamente\"\n- E NUNCA deve ficar com loading infinito\n\n=== CRITÉRIOS TÉCNICOS ===\n\nSegurança:\n- Implementar sanitização de input (DOMPurify ou similar)\n- Validar no backend também (defesa em profundidade)\n- Adicionar Content Security Policy headers\n\nPerformance e Confiabilidade:\n- Aumentar connection pool do Postgres (atual: insuficiente)\n- Implementar retry pattern com exponential backoff\n- Adicionar circuit breaker para gateway de pagamento\n- Timeout máximo: 45s (com retries)\n\nControle de Cupons:\n- Usar transação SQL com SELECT FOR UPDATE\n- Ou implementar Redis com INCR atômico\n- Adicionar idempotency key para evitar duplo uso\n\nUX e Monitoring:\n- Implementar polling de status do pagamento\n- Webhook de confirmação assíncrono\n- Timeout na UI: 45s (> timeout backend)\n- Logs estruturados para debugging\n\n=== CONTEXTO DO BUG ===\n\nSeveridade: CRÍTICA\nImpacto: 150+ clientes, R$ 15.000 em perdas, rating caiu de 4.5→3.2\n\nProblemas Identificados:\n1. XSS no campo cupom (OWASP A03:2021)\n2. Connection pool exhausted (causa 504 timeout)\n3. Race condition em cupons (não-atômico)\n4. Loading infinito após timeout (UX ruim)\n\nMúltiplos Componentes Afetados:\n- Frontend: checkout page, cupom input, loading states\n- Backend: payment API, cupom validation, database connections\n- Integração: gateway de pagamento\n- Infraestrutura: Postgres connection pool\n\n=== TASKS TÉCNICAS SUGERIDAS ===\n\n1. [SEGURANÇA] Implementar sanitização de input no cupom\n2. [INFRA] Aumentar Postgres connection pool\n3. [BACKEND] Adicionar retry pattern no payment service\n4. [BACKEND] Implementar controle atômico de cupons\n5. [FRONTEND] Melhorar UX com feedback de status\n6. [MONITORING] Adicionar alertas para timeout rate > 5%\n7. [TESTES] Criar testes de carga para checkout\n8. [TESTES] Testes de race condition em cupons",
+    "metrics": {
+      "f1": {
+        "score": 0.9,
+        "precision": 0.9,
+        "recall": 0.9,
+        "precision_rating": "acceptable",
+        "recall_rating": "acceptable",
+        "reasoning": "Ambas as respostas capturam os principais aspectos dos problemas identificados e propõem soluções semelhantes. No entanto, a resposta gerada não menciona explicitamente a necessidade de implementar sanitização de entrada, aumentar o pool de conexões do PostgreSQL, adicionar retry pattern com backoff, ou implementar controle atômico de cupons usando transações SQL ou Redis. Essas são informações importantes presentes na resposta esperada."
+      },
+      "clarity": {
+        "score": 0.92,
+        "reasoning": "A resposta é bem organizada, com uma estrutura lógica e clara. Utiliza linguagem simples e direta, evitando jargões desnecessários. As informações são concisas e não deixam ambiguidades, embora haja algumas redundâncias menores que não comprometem significativamente a clareza geral."
+      },
+      "precision": {
+        "score": 0.9,
+        "rating": "acceptable",
+        "reasoning": "A resposta aborda corretamente os problemas identificados e as soluções propostas. No entanto, há algumas pequenas divergências em relação à referência, como a adição de um critério técnico adicional (timeout máximo de 45s) que não estava presente na pergunta original. Além disso, a descrição do critério B sobre integração com o gateway de pagamento sugere um comportamento específico que não foi explicitamente mencionado na pergunta original."
+      }
+    }
+  },
+  {
+    "example": 4,
+    "question": "Modal de confirmação de exclusão aparece atrás do menu lateral em telas pequenas (< 768px).\n\nDetalhes:\n- z-index do modal: 1000\n- z-index do menu lateral: 1050\n- Usuários não conseguem clicar nos botões do modal\n- Precisam fechar o menu lateral antes",
+    "answer": "Como um usuário tentando excluir um item, eu quero que o modal de confirmação de exclusão apareça sobre o menu lateral, para que eu possa clicar nos botões sem interagir com o menu.\n\nCritérios de Aceitação:\n- Dado que estou em uma tela com largura menor que 768px\n- Quando o modal de confirmação de exclusão é exibido\n- Então o z-index do modal deve ser maior que o do menu lateral\n- E o z-index do modal deve ser 1000\n- E o z-index do menu lateral deve ser 1050\n- E os botões do modal devem estar visíveis e clicáveis\n- E não deve ser necessário fechar o menu lateral para interagir com o modal",
+    "reference": "Como um usuário em dispositivo móvel, eu quero que modais importantes apareçam acima de todos os outros elementos, para que eu possa interagir com eles sem precisar fechar outros componentes.\n\nCritérios de Aceitação:\n- Dado que estou em uma tela com largura menor que 768px\n- Quando aciono uma ação que abre um modal de confirmação\n- Então o modal deve aparecer acima de todos os elementos da página\n- E o menu lateral deve ficar desfocado (backdrop)\n- E todos os botões do modal devem ser clicáveis\n- E o modal deve ocupar pelo menos 90% da largura da tela\n\nCritérios de Acessibilidade:\n- O foco do teclado deve ir para o modal\n- Deve ser possível fechar com ESC\n- O backdrop deve fechar ao clicar fora\n\nContexto Técnico:\n- Bug atual: z-index modal (1000) < z-index menu (1050)\n- Solução: ajustar z-index do modal para > 1050\n- Devices afetados: mobile e tablets (< 768px)",
+    "metrics": {
+      "f1": {
+        "score": 0.9,
+        "precision": 0.9,
+        "recall": 0.9,
+        "precision_rating": "acceptable",
+        "recall_rating": "acceptable",
+        "reasoning": "Ambas as respostas tratam da importância de o modal de confirmação de exclusão aparecer acima do menu lateral. A resposta gerada menciona corretamente que o z-index do modal deve ser maior que o do menu lateral, mas omite explicitamente os valores específicos de z-index (1000 e 1050) presentes na referência. Ambas as respostas capturam a essência dos critérios de aceitação, mas com pequenas divergências em detalhes específicos."
+      },
+      "clarity": {
+        "score": 0.89,
+        "reasoning": "A resposta tem uma boa organização e estrutura lógica, mas pode ser mais concisa. As informações estão em ordem sensata, mas há algumas redundâncias, como a repetição do z-index do menu lateral. A linguagem é simples e direta, mas poderia ser ainda mais clara ao especificar que o modal deve estar acima de todos os elementos da página, não apenas do menu lateral."
+      },
+      "precision": {
+        "score": 0.9,
+        "rating": "acceptable",
+        "reasoning": "A resposta está focada na questão e correta em relação aos critérios de aceitação. No entanto, a ordem dos z-index foi invertida em comparação com a referência fornecida."
+      }
+    }
+  },
+  {
+    "example": 5,
+    "question": "Carrinho permite finalizar compra mesmo com produto fora de estoque.\n\nFluxo do bug:\n1. Produto tem 2 unidades em estoque\n2. Cliente A adiciona 2 unidades ao carrinho\n3. Estoque fica zerado\n4. Cliente B ainda consegue adicionar ao carrinho\n5. Cliente B finaliza compra\n6. Sistema gera pedido mas não tem estoque para enviar",
+    "answer": "Como um usuário finalizando uma compra, eu quero que o carrinho verifique o estoque disponível antes de permitir a adição de produtos, para que eu não finalize uma compra impossível de ser entregue.\n\nCritérios de Aceitação:\n- Dado que o produto tem 2 unidades em estoque\n- Quando o primeiro cliente adiciona 2 unidades ao carrinho\n- Então o estoque deve ser reduzido para zero\n- E o carrinho não deve permitir a adição de mais unidades do mesmo produto\n- E o sistema deve impedir a finalização da compra se o estoque for insuficiente\n\nContexto Técnico:\n- Estoque inicial do produto: 2 unidades\n- Compra realizada pelo cliente A: 2 unidades\n- Tentativa de compra pelo cliente B: 1 unidade\n- Resultado final: pedido gerado sem estoque suficiente para envio",
+    "reference": "Como o sistema de e-commerce, eu quero validar disponibilidade de estoque antes de permitir finalização de compra, para que não sejam criados pedidos que não podem ser atendidos.\n\nCritérios de Aceitação:\n- Dado que um produto está no carrinho\n- Quando o cliente tenta finalizar a compra\n- Então o sistema deve validar estoque disponível em tempo real\n- E se o produto estiver fora de estoque, deve bloquear a compra\n- E deve exibir mensagem clara sobre a indisponibilidade\n- E deve sugerir remover o item ou aguardar reposição\n\nCritérios de Prevenção:\n- Quando produto ficar sem estoque\n- E houver itens em carrinhos de outros clientes\n- Então deve exibir aviso \"estoque limitado\" ao adicionar\n- E deve reservar estoque temporariamente (15 minutos) ao ir para checkout\n\nContexto do Bug:\n- Problema: validação de estoque não é feita no checkout\n- Impacto: pedidos criados sem possibilidade de atendimento\n- Cenário crítico: múltiplos clientes comprando último item",
+    "metrics": {
+      "f1": {
+        "score": 0.9,
+        "precision": 0.9,
+        "recall": 0.9,
+        "precision_rating": "acceptable",
+        "recall_rating": "acceptable",
+        "reasoning": "Ambas as respostas abordam a necessidade de verificar o estoque antes da finalização da compra. A resposta gerada menciona a restrição de adição de produtos após o estoque ser zerado, que é similar à regra de validação de estoque no checkout. No entanto, a resposta esperada inclui detalhes adicionais sobre a validação em tempo real e a reserva temporária de estoque, que são ausentes na resposta gerada."
+      },
+      "clarity": {
+        "score": 0.87,
+        "reasoning": "A resposta tem boa organização e estrutura lógica, mas falta detalhar como o sistema deve reagir quando o estoque é insuficiente. Além disso, a linguagem é clara e direta, mas poderia ser mais concisa, removendo algumas redundâncias."
+      },
+      "precision": {
+        "score": 0.9,
+        "rating": "acceptable",
+        "reasoning": "A resposta aborda a questão central de validar o estoque antes da finalização da compra. No entanto, ela não menciona explicitamente a restrição de não permitir a adição de itens ao carrinho após o estoque ser esgotado, diferindo da ground truth fornecida."
+      }
+    }
+  },
+  {
+    "example": 6,
+    "question": "App Android trava ao carregar lista de notificações com mais de 50 itens.\n\nObservações:\n- Tela fica congelada por 5-10 segundos\n- ANR (Application Not Responding) em alguns casos\n- Lista não está usando paginação\n- Carrega tudo de uma vez na Thread principal",
+    "answer": "Como um usuário do app Android, eu quero que a lista de notificações seja carregada rapidamente, para que eu possa visualizá-la sem demora.\n\nCritérios de Aceitação:\n- Dado que estou carregando a lista de notificações\n- Quando há mais de 50 itens\n- Então a tela não deve ficar congelada por mais de 2 segundos\n- E não deve ocorrer ANR\n- E a lista deve ser carregada usando uma thread secundária\n- E a lista deve ser exibida de forma ordenada e sem sobreposição\n\n=== CONTEXTO TÉCNICO ===\n- Tela fica congelada por 5-10 segundos\n- ANR em alguns casos\n- Lista não está usando paginação\n- Carrega tudo de uma vez na Thread principal",
+    "reference": "Como um usuário do app Android, eu quero visualizar minhas notificações rapidamente sem travamentos, para que eu possa acessar informações importantes sem frustrações.\n\nCritérios de Aceitação:\n- Dado que tenho mais de 50 notificações\n- Quando abro a tela de notificações\n- Então a tela deve carregar em menos de 2 segundos\n- E não deve ocorrer congelamento da interface\n- E não deve aparecer mensagem de ANR\n\nCritérios Técnicos:\n- Implementar paginação (carregar 20 itens por vez)\n- Carregar dados em background thread\n- Usar RecyclerView com ViewHolder pattern\n- Implementar scroll infinito para carregar mais itens\n\nContexto do Bug:\n- Problema: lista sem paginação carregando na Thread principal\n- Sintoma: ANR após 50+ itens\n- Tempo de tela congelada: 5-10 segundos",
+    "metrics": {
+      "f1": {
+        "score": 0.9,
+        "precision": 0.9,
+        "recall": 0.9,
+        "precision_rating": "acceptable",
+        "recall_rating": "acceptable",
+        "reasoning": "Ambas as respostas discutem a necessidade de carregar a lista de notificações rapidamente e mencionam a congelamento da interface e ANR como problemas. A resposta gerada menciona a utilização de uma thread secundária, que é uma solução equivalente à implementação de paginação sugerida na referência. Ambas as respostas também abordam a necessidade de exibir a lista de forma ordenada e sem sobreposição. No entanto, a referência fornece detalhes técnicos específicos sobre a implementação de paginação e o uso de RecyclerView, que não foram explicitamente mencionados na resposta gerada."
+      },
+      "clarity": {
+        "score": 0.87,
+        "reasoning": "A resposta tem uma boa organização e estrutura lógica, mas há algumas redundâncias e ambiguidades. Por exemplo, a descrição dos critérios técnicos é repetitiva e poderia ser mais concisa. Além disso, a linguagem é clara, mas poderia ser ainda mais direta, evitando termos técnicos desnecessários para um usuário final."
+      },
+      "precision": {
+        "score": 0.9,
+        "rating": "acceptable",
+        "reasoning": "A resposta captura os principais pontos da questão, incluindo a necessidade de carregamento rápido, evitar congelamento e ANR, e a implementação de paginação. No entanto, a descrição dos critérios técnicos é um pouco menos detalhada do que na referência, especialmente em relação à utilização específica de RecyclerView e ViewHolder pattern."
+      }
+    }
+  },
+  {
+    "example": 7,
+    "question": "Pipeline de vendas calcula valor total errado quando há desconto.\n\nCenário:\n- Produto A: R$ 1.000\n- Produto B: R$ 500\n- Desconto: 10%\n- Valor esperado: R$ 1.350\n- Valor mostrado: R$ 1.400\n\nO sistema aplica desconto só no primeiro produto.",
+    "answer": "Como um usuário finalizando uma compra, eu quero que o valor total do pedido seja calculado corretamente, para que eu saiba o valor final a pagar.\n\nCritérios de Aceitação:\n- Dado que tenho dois produtos no carrinho\n- Quando aplico um desconto percentual\n- Então o valor total deve refletir o desconto em ambos os produtos\n- E o valor total mostrado deve ser R$ 1.350\n- E não deve aplicar desconto apenas no primeiro produto\n\n---",
+    "reference": "Como um vendedor gerenciando oportunidades no pipeline, eu quero que o valor total seja calculado corretamente quando aplico descontos, para que eu possa apresentar propostas precisas aos clientes.\n\nCritérios de Aceitação:\n- Dado que tenho uma oportunidade com múltiplos produtos\n- Quando aplico um desconto percentual\n- Então o desconto deve ser aplicado no valor total de todos os produtos\n- E o valor final deve ser: (soma dos produtos) × (1 - desconto%)\n- E o detalhamento deve mostrar: subtotal, desconto e total\n\nExemplo de Cálculo:\n- Produto A: R$ 1.000\n- Produto B: R$ 500\n- Subtotal: R$ 1.500\n- Desconto 10%: -R$ 150\n- Total: R$ 1.350\n\nContexto Técnico:\n- Bug atual: desconto sendo aplicado apenas no primeiro produto\n- Resultado incorreto: R$ 1.400 (deveria ser R$ 1.350)",
+    "metrics": {
+      "f1": {
+        "score": 0.9,
+        "precision": 0.9,
+        "recall": 0.9,
+        "precision_rating": "acceptable",
+        "recall_rating": "acceptable",
+        "reasoning": "Ambas as respostas tratam do cálculo incorreto do valor total com desconto. A resposta gerada menciona corretamente que o desconto deve ser aplicado em ambos os produtos, embora use uma frase diferente para expressar isso. Ambas as respostas também mencionam o valor esperado de R$ 1.350. No entanto, ambas omitem explicitamente mencionar o critério de aceitação técnico sobre o cálculo detalhado, como subtotal, desconto e total."
+      },
+      "clarity": {
+        "score": 0.92,
+        "reasoning": "A resposta está bem organizada e segue uma estrutura lógica. A linguagem é simples e direta, evitando jargões desnecessários. As informações são claras e concisas, sem ambiguidades. O único possível ponto de melhoria é a inclusão explícita do critério de aceitação para o cálculo do desconto, que já está presente mas poderia ser mais destacado."
+      },
+      "precision": {
+        "score": 0.9,
+        "rating": "acceptable",
+        "reasoning": "A resposta está focada na questão e correta em relação ao cálculo do valor total. No entanto, a referência fornece um contexto diferente, focando em vendedores em vez de usuários finais. Embora isso não seja uma alucinação, é uma pequena divergência que não afeta a precisão do cálculo."
+      }
+    }
+  },
+  {
+    "example": 8,
+    "question": "Endpoint /api/users/:id retorna dados de qualquer usuário sem validar permissões.\n\nExemplo:\n- Usuário comum (ID 100) consegue acessar GET /api/users/1 (admin)\n- Recebe email, telefone, endereço do admin\n- Apenas admins deveriam ver dados de outros usuários\n\nSeveridade: ALTA - vazamento de dados pessoais",
+    "answer": "Como um usuário comum, eu quero que o endpoint /api/users/:id valide minhas permissões antes de retornar dados, para que meus dados pessoais não sejam expostos indevidamente.\n\nCritérios de Aceitação:\n- Dado que sou um usuário comum\n- Quando faço uma requisição GET /api/users/1 (ID de um admin)\n- Então o sistema deve retornar um status 403 Forbidden\n- E não deve retornar informações pessoais do admin\n- E deve indicar que acesso não autorizado foi tentado\n\n=== CONTEXTO DO BUG ===\n- Endpoint: /api/users/:id\n- Permissão não validada\n- Usuário comum acessa dados de admin\n- Severidade: ALTA - vazamento de dados pessoais",
+    "reference": "Como o sistema, eu quero validar permissões antes de retornar dados de usuários, para que apenas usuários autorizados possam acessar informações pessoais de outros usuários.\n\nCritérios de Aceitação:\n- Dado que sou um usuário comum\n- Quando tento acessar GET /api/users/:id de outro usuário\n- Então devo receber HTTP 403 Forbidden\n- E apenas devo poder acessar meus próprios dados\n- E administradores devem poder acessar dados de todos\n\nCritérios Adicionais para Admins:\n- Dado que sou um administrador\n- Quando acesso GET /api/users/:id de qualquer usuário\n- Então devo receber os dados completos com HTTP 200\n- E o acesso deve ser registrado em log de auditoria\n\nContexto de Segurança:\n- Severidade: ALTA\n- Tipo: Quebra de controle de acesso (OWASP A01:2021)\n- Dados expostos: email, telefone, endereço\n- Ação: Implementar middleware de autorização",
+    "metrics": {
+      "f1": {
+        "score": 0.9,
+        "precision": 0.9,
+        "recall": 0.9,
+        "precision_rating": "acceptable",
+        "recall_rating": "acceptable",
+        "reasoning": "Ambas as respostas tratam da necessidade de validação de permissões antes de retornar dados de usuários. A resposta gerada menciona o status 403 Forbidden e a não exposição de informações pessoais, mas não aborda o registro de acesso não autorizado em log de auditoria como nos critérios de aceitação esperados."
+      },
+      "clarity": {
+        "score": 0.95,
+        "reasoning": "A resposta está bem organizada, com uma estrutura lógica e clara. A linguagem é simples e direta, evitando jargões desnecessários. Não há ambiguidades significativas e a informação é concisa, sem redundâncias desnecessárias."
+      },
+      "precision": {
+        "score": 0.9,
+        "rating": "acceptable",
+        "reasoning": "A resposta está focada na questão e correta em sua essência, mas adiciona alguns detalhes técnicos que não foram explicitamente solicitados na pergunta original, como a implementação de um middleware de autorização. Esses detalhes adicionais não alteram o foco principal da resposta."
+      }
+    }
+  },
+  {
+    "example": 9,
+    "question": "Relatório de vendas demora mais de 2 minutos para gerar quando filtro ultrapassa 1000 registros.\n\nDetalhes:\n- Query SQL está sem index na coluna data_venda\n- Timeout do navegador após 120 segundos\n- Usuários reclamando de lentidão no horário comercial",
+    "answer": "Como um administrador gerenciando relatórios, eu quero que o relatório de vendas gere rapidamente, para que eu obtenha os dados necessários sem demora.\n\nCritérios de Aceitação:\n- Dado que o filtro selecionado ultrapassa 1000 registros\n- Quando gero o relatório\n- Então a consulta SQL deve usar um índice na coluna data_venda\n- E o navegador não deve apresentar timeout após 120 segundos\n- E o relatório deve ser gerado em menos de 2 minutos\n- E a interface deve mostrar progresso durante a geração do relatório\n\nContexto Técnico:\n- Query SQL atual: sem index na coluna data_venda\n- Timeout do navegador: 120 segundos\n- Reclamações de usuários: lentidão no horário comercial",
+    "reference": "Como um gerente de vendas, eu quero gerar relatórios de vendas rapidamente mesmo com grandes volumes de dados, para que eu possa analisar informações sem esperar longos períodos.\n\nCritérios de Aceitação:\n- Dado que solicito um relatório com mais de 1000 registros\n- Quando aplico filtros e clico em \"Gerar Relatório\"\n- Então o relatório deve ser gerado em menos de 30 segundos\n- E não deve ocorrer timeout no navegador\n- E o desempenho deve ser consistente em horário de pico\n\nContexto Técnico:\n- Problema identificado: falta de índice na coluna data_venda\n- Performance atual: >120s para 1000+ registros\n- Performance esperada: <30s para qualquer volume\n- Sugestão: adicionar índice e otimizar query SQL",
+    "metrics": {
+      "f1": {
+        "score": 0.9,
+        "precision": 0.9,
+        "recall": 0.9,
+        "precision_rating": "acceptable",
+        "recall_rating": "acceptable",
+        "reasoning": "Ambas as respostas abordam os principais pontos, incluindo a necessidade de uso de índice, evitar timeout e melhorar a performance. A diferença principal é no tempo de geração do relatório, onde a resposta esperada sugere menos de 2 minutos e a gerada pelo modelo menos de 30 segundos, mas isso não é suficiente para classificá-la como insuficiente."
+      },
+      "clarity": {
+        "score": 0.95,
+        "reasoning": "A resposta está bem organizada, com uma estrutura lógica e clara. Utiliza linguagem simples e direta, evitando jargões desnecessários. As informações são concisas e não há ambiguidades significativas. A única pequena melhoria possível seria a concisão, onde algumas frases poderiam ser ainda mais enxutas sem perder a clareza."
+      },
+      "precision": {
+        "score": 0.9,
+        "rating": "acceptable",
+        "reasoning": "A resposta mantém o foco na questão original e assegura que o relatório seja gerado rapidamente, mesmo com grandes volumes de dados. No entanto, a referência ao tempo de geração do relatório ser 'em menos de 30 segundos' é mais específico do que o 'menos de 2 minutos' mencionado na pergunta, o que representa uma pequena divergência."
+      }
+    }
+  },
+  {
+    "example": 10,
+    "question": "Webhook de pagamento aprovado não está sendo chamado.\n\nSteps to reproduce:\n1. Fazer pedido de R$ 100\n2. Pagar com cartão de crédito\n3. Pagamento é aprovado no gateway\n4. Sistema não recebe notificação\n5. Status do pedido fica como \"pendente\"\n\nLogs do gateway mostram: HTTP 500 ao tentar POST /api/webhooks/payment",
+    "answer": "Como um usuário finalizando uma compra, eu quero que o webhook de pagamento aprovado seja chamado corretamente, para que o status do pedido seja atualizado automaticamente.\n\nCritérios de Aceitação:\n- Dado que o pedido é pago com cartão de crédito\n- Quando o pagamento é aprovado no gateway\n- Então o sistema deve receber a notificação via webhook\n- E o status do pedido deve ser atualizado para \"pagamento aprovado\"\n- E não deve ficar pendente\n\nContexto Técnico:\n- Logs do gateway: HTTP 500 ao tentar POST /api/webhooks/payment",
+    "reference": "Como o sistema de e-commerce, eu quero receber notificações de pagamento aprovado via webhook, para que o status dos pedidos seja atualizado automaticamente após confirmação do pagamento.\n\nCritérios de Aceitação:\n- Dado que um pagamento é aprovado no gateway\n- Quando o gateway envia POST para /api/webhooks/payment\n- Então o endpoint deve retornar HTTP 200\n- E o status do pedido deve mudar de \"pendente\" para \"aprovado\"\n- E o cliente deve receber email de confirmação\n- E o sistema deve logar o evento para auditoria\n\nContexto Técnico:\n- Endpoint está retornando HTTP 500\n- Gateway: [nome do gateway de pagamento]\n- Logs indicam falha no processamento do webhook",
+    "metrics": {
+      "f1": {
+        "score": 0.9,
+        "precision": 0.9,
+        "recall": 0.9,
+        "precision_rating": "acceptable",
+        "recall_rating": "acceptable",
+        "reasoning": "Ambas as respostas capturam o principal problema (webhook não sendo chamado) e os critérios de aceitação centrais. A diferença principal é que a resposta gerada menciona 'status do pedido' sendo atualizado para 'pagamento aprovado', enquanto a referência especifica 'aprovado' e 'pendente'. Ambas as respostas contêm informações essenciais, mas há pequenas divergências que não exigem reescrita significativa."
+      },
+      "clarity": {
+        "score": 0.87,
+        "reasoning": "A resposta é clara e organizada, mas há algumas redundâncias. Por exemplo, tanto na descrição dos critérios de aceitação quanto no contexto técnico, as mesmas informações são repetidas. Além disso, a linguagem é simples e direta, mas poderia ser mais concisa."
+      },
+      "precision": {
+        "score": 0.9,
+        "rating": "acceptable",
+        "reasoning": "A resposta mantém o foco na questão e as correções técnicas necessárias. No entanto, adiciona alguns detalhes não solicitados, como o envio de email de confirmação e a necessidade de logar o evento para auditoria, que não estavam presentes na pergunta original."
+      }
+    }
+  },
+  {
+    "example": 11,
+    "question": "Imagens de produtos não aparecem no Safari. No Chrome funciona normal.",
+    "answer": "Como um usuário navegando pelo site, eu quero que as imagens de produtos\napareçam corretamente em todos os navegadores, para que eu possa visualizar\nos produtos de maneira consistente.\n\nCritérios de Aceitação:\n- Dado que estou visualizando um produto\n- Quando acesso o site no Safari\n- Então as imagens devem carregar corretamente\n- E não devem apresentar distorções ou sobreposições\n- E devem ter o mesmo tempo de carregamento que no Chrome",
+    "reference": "Como um cliente usando Safari, eu quero visualizar as imagens dos produtos, para que eu possa avaliar os itens antes de comprar.\n\nCritérios de Aceitação:\n- Dado que estou navegando em um navegador Safari\n- Quando acesso a página de um produto\n- Então as imagens do produto devem carregar corretamente\n- E devem ter a mesma qualidade que em outros navegadores\n- E o tempo de carregamento deve ser similar",
+    "metrics": {
+      "f1": {
+        "score": 0.9,
+        "precision": 0.9,
+        "recall": 0.9,
+        "precision_rating": "acceptable",
+        "recall_rating": "acceptable",
+        "reasoning": "Ambas as respostas abordam a necessidade de imagens de produtos carregarem corretamente em Safari. A diferença principal é que a resposta gerada enfatiza o aspecto técnico do carregamento correto e sem distorções, enquanto a resposta esperada destaca a consistência de qualidade entre navegadores. Ambas as respostas capturam o essencial, mas há pequenas divergências que não exigem reescrita significativa."
+      },
+      "clarity": {
+        "score": 0.95,
+        "reasoning": "A resposta está bem organizada e segue uma estrutura lógica. A linguagem é simples e direta, evitando jargões desnecessários. As informações são claras e não deixam dúvidas, embora haja uma pequena redundância na menção ao tempo de carregamento ser o mesmo que no Chrome, já que o foco é especificamente no Safari."
+      },
+      "precision": {
+        "score": 0.9,
+        "rating": "acceptable",
+        "reasoning": "A resposta está focada na questão e menciona os critérios de aceitação corretamente. No entanto, a referência usa uma linguagem mais direcionada ao usuário final, enquanto a resposta gerada se dirige mais ao desenvolvedor ou responsável pelo site. Além disso, a resposta gerada menciona 'tempo de carregamento' que não estava presente na pergunta original nem na referência."
+      }
+    }
+  },
+  {
+    "example": 12,
+    "question": "Dashboard mostra contagem errada de usuários ativos. Mostra 50 mas só há 42 na lista.",
+    "answer": "Como um usuário visualizando o dashboard, eu quero que a contagem de usuários ativos seja exata, para que eu tenha uma visão precisa da atividade.\n\nCritérios de Aceitação:\n- Dado que estou no painel de usuários ativos\n- Quando o dashboard é carregado\n- Então a contagem deve mostrar 42 usuários ativos\n- E não deve mostrar 50 usuários ativos\n- E a lista de usuários deve confirmar a contagem exata",
+    "reference": "Como um administrador visualizando o dashboard, eu quero ver a contagem correta de usuários ativos, para que eu possa tomar decisões baseadas em dados precisos.\n\nCritérios de Aceitação:\n- Dado que acesso o dashboard como admin\n- Quando visualizo a métrica de usuários ativos\n- Então o número exibido deve corresponder ao total real de usuários ativos\n- E o valor deve ser atualizado em tempo real\n- E deve incluir apenas usuários com status \"ativo",
+    "metrics": {
+      "f1": {
+        "score": 0.9,
+        "precision": 0.9,
+        "recall": 0.9,
+        "precision_rating": "acceptable",
+        "recall_rating": "acceptable",
+        "reasoning": "Ambas as respostas tratam sobre a precisão da contagem de usuários ativos no dashboard. A resposta gerada menciona a contagem correta (42) e a necessidade de atualização em tempo real, embora não mencione explicitamente o status 'ativo'. As diferenças são menores e técnicas."
+      },
+      "clarity": {
+        "score": 0.87,
+        "reasoning": "A resposta está bem organizada e usa linguagem clara, mas falta especificar que o acesso deve ser feito como administrador, o que pode causar confusão. Além disso, poderia ser mais concisa, removendo a menção a 'status ativo' que não estava presente no prompt original."
+      },
+      "precision": {
+        "score": 0.9,
+        "rating": "acceptable",
+        "reasoning": "A resposta está focada na questão e menciona a necessidade de ver a contagem correta de usuários ativos. No entanto, a referência usa 'administrador' em vez de 'usuário', o que é uma pequena divergência. Além disso, a resposta não menciona que a contagem deve ser atualizada em tempo real, como na referência."
+      }
+    }
+  },
+  {
+    "example": 13,
+    "question": "No iOS, ao girar o celular para landscape, o layout da tela de perfil fica quebrado.",
+    "answer": "Como um usuário usando o aplicativo no modo landscape, eu quero que o layout da tela de perfil seja mantido, para que eu possa visualizá-lo corretamente.\n\nCritérios de Aceitação:\n- Dado que estou na tela de perfil\n- Quando giro o celular para landscape\n- Então o layout deve se ajustar corretamente\n- E não deve haver sobreposição de elementos\n- E todos os elementos visíveis e alinhados corretamente",
+    "reference": "Como um usuário de iOS, eu quero visualizar minha tela de perfil em modo paisagem, para que eu possa usar o app em qualquer orientação sem problemas visuais.\n\nCritérios de Aceitação:\n- Dado que estou na tela de perfil no iOS\n- Quando giro o dispositivo para modo paisagem\n- Então o layout deve se adaptar corretamente\n- E todos os elementos devem permanecer visíveis e alinhados\n- E não deve haver sobreposição de componentes",
+    "metrics": {
+      "f1": {
+        "score": 0.9,
+        "precision": 0.9,
+        "recall": 0.9,
+        "precision_rating": "acceptable",
+        "recall_rating": "acceptable",
+        "reasoning": "Ambas as respostas capturam a essência do problema e as soluções propostas são tecnicamente equivalentes. Houve pequenas divergências na linguagem, mas o conteúdo central foi mantido."
+      },
+      "clarity": {
+        "score": 0.95,
+        "reasoning": "A resposta gerada é clara e organizada, com uma estrutura lógica adequada. A linguagem é simples e direta, evitando jargões desnecessários. Não há ambiguidades significativas e a resposta é concisa, sem informações redundantes."
+      },
+      "precision": {
+        "score": 0.9,
+        "rating": "acceptable",
+        "reasoning": "A resposta está focada na pergunta e contém as informações essenciais, como a orientação do dispositivo e a adaptação do layout. No entanto, a linguagem usada não é exatamente a mesma da referência, mas a ideia principal é mantida."
+      }
+    }
+  },
+  {
+    "example": 14,
+    "question": "Campo de email aceita texto sem @, permitindo cadastros inválidos.",
+    "answer": "Como um usuário criando uma conta, eu quero que meu e-mail seja validado,\npara que eu não conclua o cadastro com um endereço inválido.\n\nCritérios de Aceitação:\n- Dado que estou preenchendo o cadastro\n- Quando informo um e-mail sem o caractere @\n- Então o sistema deve indicar que o e-mail é inválido\n- E não deve permitir a conclusão do cadastro com esse valor\n- E a mensagem deve explicar o formato esperado",
+    "reference": "Como um usuário criando uma conta, eu quero que o sistema valide meu email corretamente, para que eu não insira um endereço inválido por engano.\n\nCritérios de Aceitação:\n- Dado que estou no formulário de cadastro\n- Quando digito um email sem o caractere @\n- Então devo ver uma mensagem de erro\n- E não devo conseguir prosseguir com o cadastro\n- E a mensagem deve explicar o formato correto",
+    "metrics": {
+      "f1": {
+        "score": 0.9,
+        "precision": 0.9,
+        "recall": 0.9,
+        "precision_rating": "acceptable",
+        "recall_rating": "acceptable",
+        "reasoning": "Ambas as respostas capturam os principais pontos, como a necessidade de validação do email, a rejeição do cadastro se o email for inválido e a explicação do formato correto. Houve pequenas diferenças na linguagem, mas o significado foi mantido."
+      },
+      "clarity": {
+        "score": 0.95,
+        "reasoning": "A resposta gerada é clara e organizada, com uma estrutura lógica adequada. Utiliza linguagem simples e direta, evitando jargões desnecessários. Não há ambiguidades significativas e a informação é concisa, sem redundâncias desnecessárias."
+      },
+      "precision": {
+        "score": 0.9,
+        "rating": "acceptable",
+        "reasoning": "A resposta está focada na pergunta e correta em sua essência, orientando sobre a validação do email. No entanto, há uma pequena diferença na estrutura dos critérios de aceitação, onde a resposta gerada menciona 'informo' enquanto a ground truth usa 'digito', mas isso não altera significativamente o sentido."
+      }
+    }
+  },
+  {
+    "example": 15,
+    "question": "Botão de adicionar ao carrinho não funciona no produto ID 1234.",
+    "answer": "Como um usuário navegando pelo site, eu quero que o botão de adicionar ao carrinho funcione corretamente, para que eu possa incluir o produto no carrinho.\n\nCritérios de Aceitação:\n- Dado que estou visualizando o produto com ID 1234\n- Quando clico no botão de adicionar ao carrinho\n- Então o produto deve ser adicionado ao carrinho\n- E o contador do carrinho deve aumentar em 1\n- E uma mensagem deve aparecer indicando que o produto foi adicionado",
+    "reference": "Como um cliente navegando na loja, eu quero adicionar produtos ao meu carrinho de compras, para que eu possa continuar comprando e finalizar minha compra depois.\n\nCritérios de Aceitação:\n- Dado que estou visualizando um produto\n- Quando clico no botão \"Adicionar ao Carrinho\"\n- Então o produto deve ser adicionado ao carrinho\n- E devo ver uma confirmação visual\n- E o contador do carrinho deve ser atualizado",
+    "metrics": {
+      "f1": {
+        "score": 0.9,
+        "precision": 0.9,
+        "recall": 0.9,
+        "precision_rating": "acceptable",
+        "recall_rating": "acceptable",
+        "reasoning": "Ambas as respostas tratam sobre o funcionamento do botão de adicionar ao carrinho e mencionam que o produto deve ser adicionado ao carrinho e que o contador do carrinho deve ser atualizado. A diferença principal é que a resposta gerada menciona explicitamente o ID do produto e a mensagem de confirmação, mas essas informações são tecnicamente equivalentes à intenção da pergunta."
+      },
+      "clarity": {
+        "score": 0.87,
+        "reasoning": "A resposta tem uma boa organização e linguagem clara, mas pode ser mais concisa. O uso de 'como um usuário navegando pelo site' no início poderia ser removido para melhorar a concisão. Além disso, a descrição dos critérios de aceitação é redundante, pois já foi fornecida no início da resposta."
+      },
+      "precision": {
+        "score": 0.9,
+        "rating": "acceptable",
+        "reasoning": "A resposta está focada na questão e contém os critérios de aceitação essenciais. No entanto, ela não menciona explicitamente o ID do produto, que é um detalhe importante da pergunta original."
+      }
+    }
+  }
+]
